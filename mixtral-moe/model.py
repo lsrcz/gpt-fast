@@ -10,6 +10,9 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
+import os
+import kernel_ext
+import torch.distributed._functional_collectives as FC
 
 
 def find_multiple(n: int, k: int) -> int:
@@ -192,13 +195,18 @@ class ConditionalFeedForward(nn.Module):
         self.w3 = nn.Parameter(torch.empty(config.num_experts, config.intermediate_size, config.dim))
 
     def forward(self, x: Tensor, expert_indices: Tensor) -> Tensor:
-        w1_weights = self.w1[expert_indices] # [T, A, D, D]
-        w3_weights = self.w3[expert_indices] # [T, A, D, D]
-        w2_weights = self.w2[expert_indices]  # [T, A, D, D]
-        x1 = F.silu(torch.einsum('ti,taoi -> tao', x, w1_weights))
-        x3 = torch.einsum('ti, taoi -> tao', x, w3_weights)
-        expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), w2_weights)
-        return expert_outs
+        return kernel_ext.conditional_feed_forward_forward(x, expert_indices, self.w1, self.w2, self.w3)
+        # w1_weights = self.w1[expert_indices] # [T, A, D, D]
+        # w3_weights = self.w3[expert_indices] # [T, A, D, D]
+        # w2_weights = self.w2[expert_indices]  # [T, A, D, D]
+        # x1 = F.silu(torch.einsum('ti,taoi -> tao', x, w1_weights))
+        # x3 = torch.einsum('ti, taoi -> tao', x, w3_weights)
+        # expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), w2_weights)
+        # return expert_outs
+
+def _get_world_size() -> int:
+    return int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+
 
 
 class MOEFeedForward(nn.Module):
@@ -215,9 +223,18 @@ class MOEFeedForward(nn.Module):
         scores = self.gate(x) # [T, E]
         expert_weights = F.softmax(scores, dim=-1)
         expert_weights, expert_indices = torch.topk(expert_weights, self.num_activated_experts, dim=-1) # [T, A], [T, A]
-        expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # [T, A]
-        expert_outs = self.cond_ffn(x, expert_indices)
-        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights)
+        return kernel_ext.moe_feed_forward_after_expert_weights_indices(
+            x,
+            expert_weights,
+            expert_indices,
+            self.cond_ffn.w1,
+            self.cond_ffn.w2,
+            self.cond_ffn.w3,
+            FC.__dict__["_resolve_group_name"](list(range(_get_world_size()))),
+        )
+        # expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # [T, A]
+        # expert_outs = self.cond_ffn(x, expert_indices)
+        # return torch.einsum('tai,ta -> ti', expert_outs, expert_weights)
 
 
 class RMSNorm(nn.Module):

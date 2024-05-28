@@ -14,3 +14,12 @@ wandb
 # downloaded by our tests
 original_model.py
 original_adapter.py
+
+.clangd
+.vscode/
+cmake_configure.sh
+compile_commands.json
+
+.cache/
+.eggs/
+*.so
