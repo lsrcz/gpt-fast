@@ -195,14 +195,13 @@ class ConditionalFeedForward(nn.Module):
         self.w3 = nn.Parameter(torch.empty(config.num_experts, config.intermediate_size, config.dim))
 
     def forward(self, x: Tensor, expert_indices: Tensor) -> Tensor:
-        return kernel_ext.conditional_feed_forward_forward(x, expert_indices, self.w1, self.w2, self.w3)
-        # w1_weights = self.w1[expert_indices] # [T, A, D, D]
-        # w3_weights = self.w3[expert_indices] # [T, A, D, D]
-        # w2_weights = self.w2[expert_indices]  # [T, A, D, D]
-        # x1 = F.silu(torch.einsum('ti,taoi -> tao', x, w1_weights))
-        # x3 = torch.einsum('ti, taoi -> tao', x, w3_weights)
-        # expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), w2_weights)
-        # return expert_outs
+        w1_weights = self.w1[expert_indices] # [T, A, D, D]
+        w3_weights = self.w3[expert_indices] # [T, A, D, D]
+        w2_weights = self.w2[expert_indices]  # [T, A, D, D]
+        x1 = F.silu(torch.einsum('ti,taoi -> tao', x, w1_weights))
+        x3 = torch.einsum('ti, taoi -> tao', x, w3_weights)
+        expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), w2_weights)
+        return expert_outs
 
 def _get_world_size() -> int:
     return int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
@@ -216,7 +215,21 @@ class MOEFeedForward(nn.Module):
         self.cond_ffn = ConditionalFeedForward(config)
         self.dim = config.dim
         self.num_activated_experts = config.num_activated_experts
-    def forward(self, x: Tensor) -> Tensor:
+        self._forward_func = self._forward_python
+
+    def _forward_python(self, x: Tensor) -> Tensor:
+        x = x.view(-1, self.dim)
+        # T = num_tokens, E = num_experts, D = hidden dim, A = activated experts
+        # x: [T, D]
+        scores = self.gate(x) # [T, E]
+        expert_weights = F.softmax(scores, dim=-1)
+        expert_weights, expert_indices = torch.topk(expert_weights, self.num_activated_experts, dim=-1) # [T, A], [T, A]
+        expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # [T, A]
+        expert_outs = self.cond_ffn(x, expert_indices)
+        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights)
+
+
+    def _tp_forward_cpp(self, x: Tensor) -> Tensor:
         x = x.view(-1, self.dim)
         # T = num_tokens, E = num_experts, D = hidden dim, A = activated experts
         # x: [T, D]
@@ -235,6 +248,12 @@ class MOEFeedForward(nn.Module):
         # expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # [T, A]
         # expert_outs = self.cond_ffn(x, expert_indices)
         # return torch.einsum('tai,ta -> ti', expert_outs, expert_weights)
+
+    def use_tp_cpp(self)-> None:
+        self._forward_func = self._tp_forward_cpp
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self._forward_func(x)
 
 
 class RMSNorm(nn.Module):

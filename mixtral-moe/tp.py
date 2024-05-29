@@ -106,9 +106,15 @@ def _apply_tp_moe_ffn(mlp: MOEFeedForward) -> None:
         mlp.cond_ffn.scales3 = nn.Parameter(shard(mlp.cond_ffn.scales3, 1), requires_grad=False)
         mlp.cond_ffn.scales2 = nn.Parameter(mlp.cond_ffn.scales2, requires_grad=False)
 
-    world_size = _get_world_size()
-    mlp.cond_ffn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum", list(range(world_size))))
+    mlp.use_tp_cpp()
+
+    # world_size = _get_world_size()
+    # mlp.cond_ffn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
+    #     output, "sum", list(range(world_size))))
+
+    # The following has similar performance as the above from the original repo
+    # mlp.cond_ffn.register_forward_hook(lambda _module, _input, output: dist.all_reduce(
+    #     output))
 
 
 def _apply_tp_attn(attn: Attention) -> None:
