@@ -1,18 +1,23 @@
 name: my_gpt_fast
 channels:
-  - pytorch-nightly
-  - nvidia
+  # - pytorch
+  # - nvidia
   - conda-forge
 dependencies:
   - python=3.11
-  - pytorch
   - sentencepiece
   - tiktoken
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=12.4
   - scikit-build
   - ipython
   - pip
+  - nvtx
+  - pip:
+    # - torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu124
+    - --index-url https://download.pytorch.org/whl/nightly/cu124
+    - torch
+    - torchvision
+    - torchaudio
+  - pip:
+    - grouped_gemm
   - pip:
     - -e kernel_ext
